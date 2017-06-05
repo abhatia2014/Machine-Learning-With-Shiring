@@ -164,4 +164,127 @@ food_world_cup_gather %>%
   theme(axis.text.x = element_text(angle=90,vjust = 0.5,hjust = 1))
 ```
 
+One last data manipulation before machine learning, finding the difference between the genders
+
+```{r}
+food_world_cup %>% 
+  collect() %>% 
+  mutate_each_(funs(as.numeric),countries) %>% # note the mutate_each_ (- after each)
+  group_by(gender) %>% 
+  summarise_each_(funs(mean),countries) %>%  # _ after each means to summarize by the given variable, i.e countries
+  summarise_each_(funs(diff),countries) %>% # computes the diff between the two categories- genders
+  gather(x,y) %>% 
+  ggplot(aes(x,y,fill=sign(y)))+
+  geom_bar(stat="identity",alpha=0.7)+
+  mytheme()+
+  theme(axis.text.x = element_text(angle=90,vjust=0.5,hjust=1))+
+  labs(x="",y="difference between genders")
+  
+```
+
+As gender is very close to zero, means men and women have similar food preferences
+
+**Spark**
+
+Let's copy the data to a spark instance
+
+```{r}
+food_world_cup=copy_to(sc,food_world_cup)
+```
+
+**Principal Component Analysis (PCA)**
+
+One of the functions of Sparks MLlib is PCA (ml_pca()- we'll use it to find which countries fall on a 2 dimensional plane of the first two principal components
+
+```{r}
+pca=food_world_cup %>% 
+  mutate_each_(funs(as.numeric),countries) %>% 
+  ml_pca(features = paste(colnames(food_world_cup)[-c(1:47)]))
+
+head(pca)
+# plot the pca 
+library(tibble)
+as.data.frame(pca$components) %>% 
+  rownames_to_column(var="lables") %>% 
+  mutate(x_2=gsub("_trans","",lables)) %>% 
+  ggplot(aes(x=PC1,y=PC2,color=x_2,label=x_2))+
+  geom_point(size=2,alpha=0.6)+
+  geom_text_repel()+
+  labs(x=paste0("PC1: ",round(pca$explained.variance[1],2)*100,"% variance"),
+       y=paste0("PC2: ",round(pca$explained.variance[2],2)*100,"% variance"))+
+  mytheme()+
+  guides(fill=FALSE,color=FALSE)
+
+
+```
+
+The least well known countries cluster on top right while most liked countries are on bottom right
+
+Finally, *Preparing the data for machine learning*
+
+first, convert the factor strings of the non country features to indexes. We use the ft_sting_indexer() function of sparklyr
+
+
+```{r}
+colnames(food_world_cup)
+food_world_cup=tbl(sc,"food_world_cup") %>% 
+  ft_string_indexer(input.col = "interest",output.col = "interest_idx") %>% 
+  ft_string_indexer(input.col = "gender",output.col = "gender_idx") %>% 
+  ft_string_indexer(input.col = "age",output.col = "age_idx") %>% 
+  ft_string_indexer(input.col = "household_income",output.col = "household_income_idx") %>% 
+  ft_string_indexer(input.col ="education",output.col = "eduction_idx" ) %>% 
+  ft_string_indexer(input.col = "location",output.col = "location_idx") %>% 
+  ft_string_indexer(input.col = "knowledge",output.col = "knowledge_idx")
+```
+
+Divide the data into training and test set
+
+```{r}
+partitions=food_world_cup %>% 
+  sdf_partition(training=0.75,test=0.25,seed=123)
+```
+
+**Machine Learning Modeling**
+
+We run the random forest algorithm to predict each country preference based on other country preference and demographic information
+
+For each country (response variable), we define the features of other countries transformed values and indexed factor variables
+
+then filtering out data rows where response variable was 0
+
+Using ml_random_forest() function to run classification models. Initially run models on all features, then extract 10 features with highest importance and rerun the model on the subset of features
+
+The sdf_predict() function is used to predict the classes of the test set
+
+To obtain quality metrics F1, weighted precision and weighted recall, we need to copy the prediction table to spark's instance and run the ml_classification_eval() function
+
+Finally, combining the output tables of all countries to compare
+
+```{r}
+require(lazyeval)
+
+for (countryname in countries) {
+  features=colnames(partitions$training)[-grep(countryname,colnames(partitions$training))] # get features corresponding to the selected countryname
+  features=features[grep("_trans|_idx",features)] # only keep features with either suffix trans or idx
+  
+  fit=partitions$training %>% 
+    filter_(interp(~var>0,var=as.name(countryname))) %>% # filter out all features with values <=0
+    ml_random_forest(intercept=FALSE,response=countryname,features=features,type="classification")
+  feature_imp=ml_tree_feature_importance(sc,fit)
+  
+  features=as.character(feature_imp[1:10,2]) # now use only the top 10 features for training the model
+  
+  fit=partitions$training %>% 
+    filter_(interp(~var>0,var=as.name(countryname))) %>% 
+    ml_random_forest(intercept=FALSE,response=countryname,features=features,type="classification")
+  partitions$test=partitions$test %>% 
+    filter_(interp(~var>0,var=as.name(countryname)))
+  pred=sdf_predict(fit,partitions$test) %>% 
+    collect()
+  
+  pred_2=as.data.frame(table(pred[[countryname]],pred$prediction))
+  pred_2$response=
+    
+}
+```
 
