@@ -1,0 +1,167 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+plot(cars)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+
+**Predicting Food preferences with sparklyr (Machine Learning)**
+
+*Shirin play ground*
+
+Spark's distributed machine learning library called *MLlib* sits on top of the spark core framework. With Sparklyr, you can easily access the MLlib. 
+```{r}
+# Whether a preference for a country's cuisine can be predicted based on preference of other countries cuisines
+library(sparklyr)
+
+# install spark locally
+spark_install(version = "2.0.0")
+```
+
+Now we can connect to a local spark instance
+
+```{r}
+library(sparklyr)
+sc=spark_connect(master = "local",version = "2.0.0")
+```
+
+Preparations for a custom ggplot theme
+
+Load packages
+
+```{r}
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(ggrepel) # for non overlapping texy labels in plots
+
+mytheme=function(base_size=12,base_family="sans"){
+  theme_minimal(base_size = base_size,base_family = base_family)+
+    theme(
+      axis.text = element_text(size=12),
+      axis.title = element_text(size=14),
+      panel.grid.major = element_line(color="grey"),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "aliceblue"),
+      strip.background = element_rect(fill="lightgrey",color = "grey",size=1),
+      strip.text = element_text(face="bold",size=12,color="black"),
+      legend.position = "right",
+      legend.justification = "top",
+      panel.border = element_rect(color="grey",fill=NA,size = 0.85)
+    )
+}
+```
+
+all NA are recoded as 0
+
+```{r}
+# load the 538 library
+library(fivethirtyeight)
+head(food_world_cup)
+food_world_cup[food_world_cup=="N/A"]=NA
+food_world_cup[,9:48][is.na(food_world_cup[,9:48])]=0
+food_world_cup$gender=as.factor(food_world_cup$gender)
+food_world_cup$location=as.factor(food_world_cup$location)
+
+```
+
+We calculate the percentage for each preference category and plot them as a pie chart facetted by country
+
+```{r}
+# calculating percentages by country
+head(food_world_cup)
+percentages=food_world_cup %>% 
+  select(algeria:vietnam) %>% 
+  gather(x,y) %>% 
+  group_by(x,y) %>% 
+  summarise(n=n()) %>% 
+  mutate(Percent=round(n/sum(n)*100,2))
+# rename countries and plot
+
+percentages %>% 
+  mutate(x_2=gsub("_"," ",x)) %>% 
+  mutate(x_2=gsub("(^|[[:space:]])([[:alpha:]])","\\1\\U\\2",x_2,perl=TRUE)) %>% 
+  mutate(x_2=gsub("And","and",x_2)) %>% 
+  ggplot(aes(x="",y=Percent,fill=y))+
+  geom_bar(width = 1,stat="identity")+
+  theme_minimal()+
+  coord_polar("y",start = 0)+
+  facet_wrap(~x_2,ncol=8)+
+  labs(fill="")
+```
+
+Imputing missing values, install package mice
+
+```{r}
+library(mice)
+dataset_impute=mice(food_world_cup[,-c(1,2)],print=FALSE) # imputes all missing values except in columns 1,2
+
+# replace the food world cup dataset with the imputations
+
+food_world_cup=cbind(food_world_cup[,2,drop=FALSE],mice::complete(dataset_impute,1))
+
+```
+
+Transforming preference variable- perference (points awarded) is categorical but using them as factor levels make models more complex - so they are converted into numbers and transforming them by dividing through the mean of the non zero values for each country.
+
+```{r}
+str(food_world_cup[,8:47])
+# convert all of these to numbers
+
+food_world_cup[8:47]=lapply(food_world_cup[8:47],FUN = as.numeric)
+countries=paste(colnames(food_world_cup)[-c(1:7)])
+
+for (countryname in countries){
+  food_world_cup[paste(countryname,"trans",sep = "_")]=food_world_cup[countryname]/mean(food_world_cup[food_world_cup[countryname]>0,countryname])
+}
+```
+
+We now plot density curves to see the distributions of transformed countries
+
+```{r}
+food_world_cup %>% 
+  gather(x,y,algeria_trans:vietnam_trans) %>% 
+  mutate(x_2=gsub("_trans","",x)) %>% 
+  mutate(x_2=gsub("_"," ",x_2)) %>% 
+  mutate(x_2=gsub("(^|[[:space:]])([[:alpha:]])","\\1\\U\\2",x_2,perl=TRUE)) %>% 
+  mutate(x_2=gsub("And","and",x_2)) %>% 
+  ggplot(aes(y))+
+  geom_density(fill="navy",alpha=0.7)+
+  mytheme()+
+  facet_wrap(~x_2,ncol = 8)+
+  labs(x="transformed preference")
+```
+
+Next we want to see which countries are most like and whether there is a gender bias for cuisines for certain countries
+
+```{r}
+food_world_cup_gather=food_world_cup %>% 
+  collect() %>% 
+  gather(country,value,algeria:vietnam)
+food_world_cup_gather$country=as.factor(food_world_cup_gather$country)
+food_world_cup_gather$value=as.numeric(food_world_cup_gather$value)
+
+# most liked cuisines
+
+food_world_cup_gather %>% 
+  select(country,value) %>% 
+  group_by(country) %>% 
+  mutate(average_value=mean(value)) %>% 
+  arrange(desc(average_value)) %>% 
+  ggplot(aes(x=reorder(country,average_value),y=average_value,fill=average_value))+
+  geom_bar(stat="identity")+
+  mytheme()+
+  theme(axis.text.x = element_text(angle=90,vjust = 0.5,hjust = 1))
+```
+
+
