@@ -265,26 +265,32 @@ require(lazyeval)
 
 for (countryname in countries) {
   features=colnames(partitions$training)[-grep(countryname,colnames(partitions$training))] # get features corresponding to the selected countryname
+} 
   features=features[grep("_trans|_idx",features)] # only keep features with either suffix trans or idx
-  
+
+for (countryname in countries) {  
   fit=partitions$training %>% 
     filter_(interp(~var>0,var=as.name(countryname))) %>% # filter out all features with values <=0
     ml_random_forest(intercept=FALSE,response=countryname,features=features,type="classification")
-  feature_imp=ml_tree_feature_importance(sc,fit)
   
-  features=as.character(feature_imp[1:10,2]) # now use only the top 10 features for training the model
-  
-  fit=partitions$training %>% 
-    filter_(interp(~var>0,var=as.name(countryname))) %>% 
-    ml_random_forest(intercept=FALSE,response=countryname,features=features,type="classification")
-  partitions$test=partitions$test %>% 
-    filter_(interp(~var>0,var=as.name(countryname)))
-  pred=sdf_predict(fit,partitions$test) %>% 
-    collect()
-  
-  pred_2=as.data.frame(table(pred[[countryname]],pred$prediction))
-  pred_2$response=
-    
 }
+  summary(fit)
+  feature_imp=ml_tree_feature_importance(sc,fit)
+  ggplot(as.data.frame(feature_imp),aes(x=feature,y=importance))+geom_bar(stat="identity")+
+    coord_flip()
+  # features=as.character(feature_imp[1:10,2]) # now use only the top 10 features for training the model
+  
+  # fit=partitions$training %>% 
+  #   filter_(interp(~var>0,var=as.name(countryname))) %>% 
+  #   ml_random_forest(intercept=FALSE,response=countryname,features=features,type="classification")
+  # partitions$test=partitions$test %>% 
+  #   filter_(interp(~var>0,var=as.name(countryname)))
+ # Now predict using the developed model - fit
+   pred=sdf_predict(fit,partitions$test) %>% 
+    collect()
+  pred
+  pred_2=as.data.frame(table(pred[[countryname]],pred$prediction))
+    
+
 ```
 
